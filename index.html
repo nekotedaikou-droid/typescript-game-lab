@@ -1,0 +1,2362 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>ゲーム開発実験 Stage 2</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      background: #1a1a2e;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: sans-serif;
+      color: #ffffff;
+    }
+    h1 {
+      margin-bottom: 12px;
+      font-size: 18px;
+      color: #aaaaaa;
+      letter-spacing: 0.05em;
+    }
+    #gameWrapper {
+      position: relative;
+      user-select: none;
+      touch-action: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    canvas {
+      display: block;
+      border: 2px solid #444444;
+    }
+    #retryButton {
+      display: none;
+      position: absolute;
+      bottom: 50px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 12px 36px;
+      font-size: 20px;
+      font-weight: bold;
+      background: #4a9eff;
+      color: #ffffff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      white-space: nowrap;
+      touch-action: manipulation;
+    }
+    #retryButton:hover {
+      background: #2a7edd;
+    }
+    .instructions {
+      margin-top: 10px;
+      font-size: 13px;
+      color: #888888;
+      text-align: center;
+      line-height: 1.5;
+    }
+
+    /* ============================================================
+       段階2: タッチ環境用スタイル（追補T-8）
+       ============================================================ */
+
+    /* タッチ環境の場合にbodyへtouch-envクラスを付与する */
+    body.touch-env h1,
+    body.touch-env .instructions {
+      /* タッチ環境では見出しと操作説明を非表示（追補T-8.3） */
+      display: none;
+    }
+    body.touch-env {
+      justify-content: center;
+      align-items: center;
+      padding: 0;
+      margin: 0;
+      overflow: hidden;
+      min-height: 100dvh;
+      height: 100dvh;
+      width: 100vw;
+    }
+    body.touch-env #gameWrapper {
+      position: relative;
+      margin: auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: auto;
+      height: auto;
+    }
+
+    /* 修正A・B・C: 縮小はゲーム画面(#gameCanvas)だけにCSS表示サイズで適用し、画面中央に収める */
+    /* 内部解像度(897×897)と座標計算は変更せず、表示のみ縮小 */
+    body.touch-env #gameCanvas {
+      width: var(--canvas-display-size, 897px);
+      height: var(--canvas-display-size, 897px);
+      max-width: 100vw;
+      max-height: 100vh;
+      display: block;
+    }
+
+    /* 仮想十字キー（追補T-5）: canvas上に重ねて表示 */
+    #virtualDpad {
+      display: none; /* デフォルト非表示。タッチ環境でJSが表示 */
+      position: fixed;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      border: none; /* 修正A: canvas共通の枠線(border: 2px solid #444444)を排除 */
+      /* 位置・サイズはJavaScriptで設定（env(safe-area-inset-*)対応） */
+    }
+
+    /* 仮想STARTボタン（追補T-6）: canvas上に重ねて表示 */
+    #virtualStart {
+      display: none; /* デフォルト非表示。タッチ環境でJSが表示 */
+      position: fixed;
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+      font-family: sans-serif;
+      font-weight: bold;
+      font-size: 15px;
+      text-align: center;
+      line-height: 1.1;
+      border-radius: 50%;
+      cursor: pointer;
+    }
+
+    /* ブラウザのデフォルト動作の抑止（追補T-8.5） */
+    body.touch-env {
+      overflow: hidden;
+      overscroll-behavior: none;
+      /* ピンチ拡大縮小を抑止 */
+      touch-action: none;
+    }
+  </style>
+</head>
+<body>
+  <h1>ゲーム開発実験 Stage 2</h1>
+  <div id="gameWrapper">
+    <canvas id="gameCanvas" width="897" height="897"></canvas>
+    <button id="retryButton">Retry</button>
+  </div>
+  <div class="instructions">
+    矢印キー／WASD（移動）、Space（ポーズ）、R（リトライ）、コントローラー：十字キー（移動）／START（ポーズ・リトライ）
+  </div>
+
+  <!-- 仮想十字キー（canvasの外に置き、fixed位置で重ねる） -->
+  <canvas id="virtualDpad"></canvas>
+  <!-- 仮想STARTボタン -->
+  <div id="virtualStart"></div>
+
+  <script>
+// ==========================================
+// 1. constants.js
+// ==========================================
+// グリッド・描画定数
+const GRID_SIZE = 13;
+const CELL_SIZE = 69;
+const CANVAS_SIZE = GRID_SIZE * CELL_SIZE; // 897
+// プレイヤー関連
+const PLAYER_INITIAL_HP = 3;
+const PLAYER_MAX_HP = 3;
+const PLAYER_SPEED = 1.5; // グリッド/秒
+const PLAYER_RADIUS = 0.4;
+const INVINCIBLE_DURATION = 1.5; // 無敵時間（秒）
+// 攻撃関連
+const ATTACK_INTERVAL_TIER0 = 1.0; // 秒
+const ATTACK_INTERVAL_UPGRADED = 0.5; // 秒
+const BULLET_SPEED = 6.0; // 暫定値: グリッド/秒
+const BULLET_RADIUS = 0.2;
+// 敵基本スペック
+const NORMAL_ENEMY_HP = 1;
+const NORMAL_ENEMY_SPEED = 0.75;
+const NORMAL_ENEMY_RADIUS = 0.4;
+const ELITE_ENEMY_HP = 3;
+const ELITE_ENEMY_SPEED = 0.75;
+const ELITE_ENEMY_RADIUS = 0.5;
+const BOSS_ENEMY_HP = 5;
+const BOSS_ENEMY_SPEED = 0.6;
+const BOSS_ENEMY_RADIUS = 0.7;
+// スポーン・戦闘構造定数（第6.3版準拠）
+const NORMAL_ENEMY_TARGET_COUNT = 5; // 雑魚敵の維持目標数（5体）
+const NORMAL_RESPAWN_DELAY = 1.0; // 雑魚撃破後、補充までの時間（1秒）
+const FU_PHASE_KILL_LIMIT = 5; // 歩の雑魚フェーズ: 累計5体撃破で補充停止
+const GIN_MOB_KILLS_PER_ELITE = 5; // 銀: 雑魚敵5体倒すごとに強敵1体出現
+const BOSS_SPAWN_GRACE_PERIOD = 10.0; // ボス出現直後、通常敵・強敵の新規出現を停止する時間（10秒）
+// 簡易分離処理
+const SEPARATION_DISTANCE = 0.6; // 暫定値: 簡易分離の距離閾値
+const SEPARATION_FORCE = 1.2;
+// アイテム関連
+const ITEM_RADIUS = 0.35;
+const MAX_ITEMS_ON_FIELD = 10; // 画面上に存在できるアイテム最大数（10個）
+const ELITE_KILLS_PER_ITEM = 3; // 強敵3体撃破ごとにアイテム出現
+const FU_MOB_KILLS_PER_ITEM = 10; // 歩の雑魚10体撃破ごとに歩アイテム出現
+// 演出関連
+const EVOLUTION_DURATION = 3.0; // 歩→銀への進化演出時間（約3秒）
+// 扉・クリア関連
+const DOOR_RADIUS = 0.5;
+const MAX_ELAPSED_TIME = 9999; // 経過時間カンスト表示（秒）
+// リトライ待ち時間（段階1: 追補T-4.3）
+const RETRY_WAIT_DURATION = 3.0; // リトライ待ち時間（秒、初期値3秒）
+
+// ==========================================
+// 段階2: タッチ関連定数（追補T-5, T-6, T-8、実機調整版）
+// ==========================================
+// URLパラメータによる調整値の上書き（実機調整用、指定がなければ初期値を使用）
+const _urlParams = (typeof window !== 'undefined' && window.location && window.location.search && typeof URLSearchParams !== 'undefined')
+    ? new URLSearchParams(window.location.search)
+    : null;
+
+function _getParamFloat(key, defaultVal) {
+    if (!_urlParams || !_urlParams.has(key)) return defaultVal;
+    const v = parseFloat(_urlParams.get(key));
+    return isNaN(v) ? defaultVal : v;
+}
+
+// 仮想十字キー（追補T-5.3、実機調整）
+const DPAD_SIZE = _getParamFloat('dpad', 208);                 // 十字キー見た目の領域の一辺（px、調整値: 208）
+const DPAD_ARM_RATIO = _getParamFloat('arm', 0.46);           // 各腕の幅比率（調整値: 0.46）
+const DPAD_DEAD_ZONE_RATIO = _getParamFloat('dead', 0.14);     // 不感帯の半径比率（調整値: 0.14）
+const DPAD_AXIS_THRESHOLD_RATIO = _getParamFloat('axis', 1.3); // 中央の四角での軸切替しきい値倍率（初期値: 1.3）
+const DPAD_OPACITY = _getParamFloat('opacity', 0.50);         // 仮想十字キーの不透明度（初期値: 0.50）
+const DPAD_MARGIN_LEFT = _getParamFloat('mleft', 16);         // 左端からの距離（px、調整値: 16）
+const DPAD_MARGIN_BOTTOM = _getParamFloat('mbottom', 16);     // 下端からの距離（px、調整値: 16）
+const DPAD_HIT_PADDING = _getParamFloat('pad', 28);           // 見た目の外側の見えない反応範囲（px、上下左右各28px）
+// 仮想STARTボタン（追補T-6, T-8.7）
+const VSTART_SIZE = 80;          // 仮想STARTの直径（px）。初期値案72〜88px
+const VSTART_MARGIN_BOTTOM = 40; // 下端からの距離（px）
+
+// ==========================================
+// 段階2: タッチ環境判定（追補T-2, U-6）
+// ==========================================
+/**
+ * タッチ主体の環境かどうかを判定する。
+ * 判定方法: window.matchMedia('(pointer: coarse)') を使い、
+ *   「主ポインタがコアース（指）」の場合をタッチ環境とする。
+ * 外れ得る場合:
+ *   - キーボード付きタブレット: キーボード接続時でも coarse のまま → タッチ環境と判定される
+ *     （ただし、キーボード・ゲームパッド入力は有効なままにする）
+ *   - マウス接続タブレット: fine に変わる機種では PC として判定される
+ *   - 開発者ツールのデバイスモード: coarse になるためタッチ環境と判定される
+ */
+const IS_TOUCH_ENV = (typeof window.matchMedia === 'function')
+    ? window.matchMedia('(pointer: coarse)').matches
+    : false;
+
+// ==========================================
+// 2. input.js
+// ==========================================
+class InputManager {
+    constructor() {
+        this.pressedKeys = new Set();
+        this.prevStartPressed = false;
+        this.prevRetryKeyPressed = false;
+        this.startJustPressed = false;
+        this.retryKeyJustPressed = false;
+
+        // 段階2: 仮想十字キーの方向（null | 'up' | 'down' | 'left' | 'right'）
+        this.virtualDpadDir = null;
+        // 段階2: 仮想STARTの「押した瞬間」フラグ（サブフレームタップ取りこぼし防止）
+        this.virtualStartPending = false;
+
+        window.addEventListener('keydown', (e) => {
+            this.pressedKeys.add(e.code);
+            // スクロール等のデフォルト動作を防止
+            if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
+                e.preventDefault();
+            }
+        });
+        window.addEventListener('keyup', (e) => {
+            this.pressedKeys.delete(e.code);
+        });
+        // 段階1: フォーカス喪失時・非表示時の入力全解除（追補T-7）
+        window.addEventListener('blur', () => {
+            this.clearInputs();
+        });
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                this.clearInputs();
+            }
+        });
+        // 段階2: 画面の向きが変わったときの入力全解除（追補T-7.1）
+        window.addEventListener('orientationchange', () => {
+            this.clearInputs();
+        });
+    }
+    /**
+     * キーボード・ボタン押下状態の全解除
+     * 修正1: ゲームパッドSTARTの押下状態に合わせてprevStartPressedを維持し誤発動を防止（追補T-7.3）
+     * 段階2: 仮想十字キーの方向・仮想STARTの押下状態も解除（追補T-7.2）
+     * 解除によってポーズ・リトライが誤発動しないよう、virtualStartPendingもfalseにする（追補T-7.3）
+     */
+    clearInputs() {
+        this.pressedKeys.clear();
+        this.startJustPressed = false;
+        this.retryKeyJustPressed = false;
+        // 仮想入力の解除（追補T-7.2）
+        this.virtualDpadDir = null;
+        this.virtualStartPending = false;
+        const gp = this.getGamepad();
+        const gpStartPressed = gp ? !!gp.buttons[9]?.pressed : false;
+        this.prevStartPressed = gpStartPressed;
+        this.prevRetryKeyPressed = false;
+    }
+    /**
+     * 毎フレームの入力状態更新（ゲーム状態に関係なく毎フレーム実行）
+     * 段階2: 仮想START（virtualStartPending）をSTART系判定に組み込む（追補T-6）
+     */
+    update() {
+        const spacePressed = this.pressedKeys.has('Space');
+        const gp = this.getGamepad();
+        const gpStartPressed = gp ? !!gp.buttons[9]?.pressed : false;
+        const currentStartPressed = spacePressed || gpStartPressed;
+
+        // START系（Space または ゲームパッドSTART または 仮想START）の押した瞬間判定
+        // virtualStartPendingは「押した瞬間」のワンショットフラグ（サブフレームタップ対応）
+        this.startJustPressed = (currentStartPressed && !this.prevStartPressed) || this.virtualStartPending;
+        this.prevStartPressed = currentStartPressed;
+        // 消費（ワンショット）
+        this.virtualStartPending = false;
+
+        // Rキーの押した瞬間判定
+        const currentRPressed = this.pressedKeys.has('KeyR');
+        this.retryKeyJustPressed = currentRPressed && !this.prevRetryKeyPressed;
+        this.prevRetryKeyPressed = currentRPressed;
+    }
+    /**
+     * 現在の移動方向ベクトル（直交4方向、正規化）を取得する
+     * 段階1: WASDキーの追加（追補T-3.1）
+     * 段階2: 仮想十字キーの方向を合流（追補T-3.2）
+     */
+    getMovementInput() {
+        let vx = 0;
+        let vy = 0;
+        // キーボード入力（矢印キー または WASD）
+        if (this.pressedKeys.has('ArrowLeft') || this.pressedKeys.has('KeyA'))
+            vx -= 1;
+        if (this.pressedKeys.has('ArrowRight') || this.pressedKeys.has('KeyD'))
+            vx += 1;
+        if (this.pressedKeys.has('ArrowUp') || this.pressedKeys.has('KeyW'))
+            vy -= 1;
+        if (this.pressedKeys.has('ArrowDown') || this.pressedKeys.has('KeyS'))
+            vy += 1;
+        // ゲームパッド入力（十字キー: 14左, 15右, 12上, 13下）
+        const gp = this.getGamepad();
+        if (gp) {
+            if (gp.buttons[14]?.pressed)
+                vx -= 1;
+            if (gp.buttons[15]?.pressed)
+                vx += 1;
+            if (gp.buttons[12]?.pressed)
+                vy -= 1;
+            if (gp.buttons[13]?.pressed)
+                vy += 1;
+        }
+        // 段階2: 仮想十字キーの方向を合流（追補T-3.2, T-5）
+        // ゲームの状態にかかわらずgetMovementInputを呼ぶのはplaying中のみなので、
+        // ここで直接mergeする（playing中でなければDpad入力は無視される）
+        if (this.virtualDpadDir === 'left')  vx -= 1;
+        if (this.virtualDpadDir === 'right') vx += 1;
+        if (this.virtualDpadDir === 'up')    vy -= 1;
+        if (this.virtualDpadDir === 'down')  vy += 1;
+
+        // クランプ (-1, 0, 1)
+        vx = Math.max(-1, Math.min(1, vx));
+        vy = Math.max(-1, Math.min(1, vy));
+        // 仕様: 意図的な斜め移動は行わない。
+        // 同時入力時は横移動を優先して縦入力をキャンセル
+        if (vx !== 0 && vy !== 0) {
+            vy = 0;
+        }
+        return { x: vx, y: vy };
+    }
+    /**
+     * START系ボタン（Space / START: 9 / 仮想START）が「押された瞬間」かどうか
+     */
+    isStartJustPressed() {
+        return this.startJustPressed;
+    }
+    /**
+     * リトライ（START系 / Rキー）が「押された瞬間」かどうか
+     */
+    isRetryJustPressed() {
+        return this.startJustPressed || this.retryKeyJustPressed;
+    }
+    getGamepad() {
+        if (!navigator.getGamepads)
+            return null;
+        const gamepads = navigator.getGamepads();
+        for (const gp of gamepads) {
+            if (gp && gp.connected) {
+                return gp;
+            }
+        }
+        return null;
+    }
+}
+
+// ==========================================
+// 3. player.js
+// ==========================================
+class Player {
+    constructor() {
+        this.pos = { x: Math.floor(GRID_SIZE / 2), y: Math.floor(GRID_SIZE / 2) };
+        this.facing = 'up';
+        this.piece = 'fu';
+        this.upgradeLevel = 0;
+        this.hp = PLAYER_INITIAL_HP;
+        this.maxHp = PLAYER_MAX_HP;
+        this.invincibleTimer = 0;
+        this.attackTimer = 0;
+    }
+    get isInvincible() {
+        return this.invincibleTimer > 0;
+    }
+    /**
+     * 現在の攻撃間隔（秒）を取得
+     */
+    get attackInterval() {
+        if (this.upgradeLevel === 0) {
+            return ATTACK_INTERVAL_TIER0; // 1.0秒
+        }
+        return ATTACK_INTERVAL_UPGRADED; // 0.5秒
+    }
+    /**
+     * 現在の最大攻撃範囲（マス）を取得
+     */
+    get attackRange() {
+        // 強化0: 1マス, 強化1: 2マス, 強化2: 3マス
+        return this.upgradeLevel + 1;
+    }
+    /**
+     * 向きに応じた前方単位ベクトル
+     */
+    getFacingVector() {
+        switch (this.facing) {
+            case 'up': return { x: 0, y: -1 };
+            case 'down': return { x: 0, y: 1 };
+            case 'left': return { x: -1, y: 0 };
+            case 'right': return { x: 1, y: 0 };
+        }
+    }
+    /**
+     * 移動と向きの更新
+     */
+    update(dt, moveInput) {
+        // 移動方向に入力があれば向きを更新（停止中は向きを維持）
+        if (moveInput.x > 0)
+            this.facing = 'right';
+        else if (moveInput.x < 0)
+            this.facing = 'left';
+        else if (moveInput.y > 0)
+            this.facing = 'down';
+        else if (moveInput.y < 0)
+            this.facing = 'up';
+        // 座標移動
+        this.pos.x += moveInput.x * PLAYER_SPEED * dt;
+        this.pos.y += moveInput.y * PLAYER_SPEED * dt;
+        // ステージ境界クランプ
+        const minBound = PLAYER_RADIUS;
+        const maxBound = (GRID_SIZE - 1) - PLAYER_RADIUS;
+        this.pos.x = Math.max(minBound, Math.min(maxBound, this.pos.x));
+        this.pos.y = Math.max(minBound, Math.min(maxBound, this.pos.y));
+        // 無敵タイマー減算
+        if (this.invincibleTimer > 0) {
+            this.invincibleTimer = Math.max(0, this.invincibleTimer - dt);
+        }
+    }
+    takeDamage() {
+        if (this.isInvincible)
+            return;
+        this.hp = Math.max(0, this.hp - 1);
+        this.invincibleTimer = INVINCIBLE_DURATION;
+    }
+    heal(amount = 1) {
+        this.hp = Math.min(this.maxHp, this.hp + amount);
+    }
+    /**
+     * 歩の強化
+     */
+    upgradeFu() {
+        if (this.piece === 'fu' && this.upgradeLevel < 2) {
+            this.upgradeLevel += 1;
+        }
+    }
+    /**
+     * 銀へ変化
+     */
+    evolveToGin() {
+        if (this.piece === 'fu' && this.upgradeLevel === 2) {
+            this.piece = 'gin';
+            this.upgradeLevel = 0;
+            this.attackTimer = 0; // 仕様: 銀変化時に攻撃間隔は1.0秒へリセット
+        }
+    }
+    /**
+     * 銀の強化
+     */
+    upgradeGin() {
+        if (this.piece === 'gin' && this.upgradeLevel < 2) {
+            this.upgradeLevel += 1;
+        }
+    }
+    /**
+     * 仕様書 24 に従う初期化
+     */
+    reset() {
+        this.pos = { x: Math.floor(GRID_SIZE / 2), y: Math.floor(GRID_SIZE / 2) };
+        this.facing = 'up';
+        this.piece = 'fu';
+        this.upgradeLevel = 0;
+        this.hp = PLAYER_INITIAL_HP;
+        this.maxHp = PLAYER_MAX_HP;
+        this.invincibleTimer = 0;
+        this.attackTimer = 0;
+    }
+    draw(ctx) {
+        const px = this.pos.x * CELL_SIZE;
+        const py = this.pos.y * CELL_SIZE;
+        const r = PLAYER_RADIUS * CELL_SIZE;
+        ctx.save();
+        ctx.translate(px, py);
+        // 無敵時間中の点滅（10Hz）
+        if (this.isInvincible && Math.floor(this.invincibleTimer * 10) % 2 === 0) {
+            ctx.globalAlpha = 0.35;
+        }
+        // 向きに応じた回転
+        let angle = 0;
+        switch (this.facing) {
+            case 'up':
+                angle = 0;
+                break;
+            case 'right':
+                angle = Math.PI / 2;
+                break;
+            case 'down':
+                angle = Math.PI;
+                break;
+            case 'left':
+                angle = -Math.PI / 2;
+                break;
+        }
+        ctx.rotate(angle);
+        // 将棋駒の五角形パス
+        ctx.beginPath();
+        ctx.moveTo(0, -r * 1.15); // 先端（前）
+        ctx.lineTo(r * 0.85, -r * 0.4); // 右肩
+        ctx.lineTo(r * 0.75, r * 0.9); // 右下
+        ctx.lineTo(-r * 0.75, r * 0.9); // 左下
+        ctx.lineTo(-r * 0.85, -r * 0.4); // 左肩
+        ctx.closePath();
+        // 駒の地色（歩と銀で質感をわずかに変化）
+        if (this.piece === 'fu') {
+            ctx.fillStyle = '#e8c39e'; // 木駒色
+        }
+        else {
+            ctx.fillStyle = '#dcdde1'; // 銀駒色（明るい銀白）
+        }
+        ctx.fill();
+        ctx.lineWidth = 2.5;
+        ctx.strokeStyle = this.piece === 'fu' ? '#6b4c2a' : '#57606f';
+        ctx.stroke();
+        // 駒の文字（「歩」または「銀」）
+        ctx.fillStyle = '#111111';
+        ctx.font = `bold ${Math.floor(r * 0.9)}px "Yu Mincho", "Hiragino Mincho ProN", serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const kanji = this.piece === 'fu' ? '歩' : '銀';
+        ctx.fillText(kanji, 0, r * 0.1);
+        ctx.restore();
+    }
+}
+
+// ==========================================
+// 4. bullet.js
+// ==========================================
+class Bullet {
+    constructor(startPos, dir, maxRange) {
+        this.isDestroyed = false;
+        this.pos = { x: startPos.x, y: startPos.y };
+        // 方向ベクトルの正規化
+        const len = Math.hypot(dir.x, dir.y);
+        if (len > 0) {
+            this.dir = { x: dir.x / len, y: dir.y / len };
+        }
+        else {
+            this.dir = { x: 0, y: -1 };
+        }
+        this.traveledDistance = 0;
+        this.maxRange = maxRange;
+    }
+    update(dt) {
+        if (this.isDestroyed)
+            return;
+        const step = BULLET_SPEED * dt;
+        this.pos.x += this.dir.x * step;
+        this.pos.y += this.dir.y * step;
+        this.traveledDistance += step;
+        // 最大射程に達したら消滅
+        if (this.traveledDistance >= this.maxRange) {
+            this.isDestroyed = true;
+        }
+    }
+    draw(ctx) {
+        if (this.isDestroyed)
+            return;
+        const px = this.pos.x * CELL_SIZE;
+        const py = this.pos.y * CELL_SIZE;
+        const r = BULLET_RADIUS * CELL_SIZE;
+        ctx.save();
+        // 弾のグロー効果
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = '#00d2d3';
+        ctx.beginPath();
+        ctx.arc(px, py, r, 0, Math.PI * 2);
+        ctx.fillStyle = '#54a0ff';
+        ctx.fill();
+        // 中央ハイライト
+        ctx.beginPath();
+        ctx.arc(px, py, r * 0.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.restore();
+    }
+}
+
+// ==========================================
+// 5. enemy.js
+// ==========================================
+class Enemy {
+    constructor(type, spawnPos) {
+        this.wasContacting = false;
+        this.isDead = false;
+        this.type = type;
+        this.pos = { x: spawnPos.x, y: spawnPos.y };
+        switch (type) {
+            case 'normal':
+                this.hp = NORMAL_ENEMY_HP;
+                this.maxHp = NORMAL_ENEMY_HP;
+                this.speed = NORMAL_ENEMY_SPEED;
+                this.radius = NORMAL_ENEMY_RADIUS;
+                break;
+            case 'elite':
+                this.hp = ELITE_ENEMY_HP;
+                this.maxHp = ELITE_ENEMY_HP;
+                this.speed = ELITE_ENEMY_SPEED;
+                this.radius = ELITE_ENEMY_RADIUS;
+                break;
+            case 'boss':
+                this.hp = BOSS_ENEMY_HP;
+                this.maxHp = BOSS_ENEMY_HP;
+                this.speed = BOSS_ENEMY_SPEED;
+                this.radius = BOSS_ENEMY_RADIUS;
+                break;
+        }
+    }
+    /**
+     * プレイヤーへ向けて追従移動
+     */
+    update(dt, playerPos) {
+        if (this.isDead)
+            return;
+        const dx = playerPos.x - this.pos.x;
+        const dy = playerPos.y - this.pos.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > 0.001) {
+            this.pos.x += (dx / dist) * this.speed * dt;
+            this.pos.y += (dy / dist) * this.speed * dt;
+        }
+        // ステージ境界クランプ
+        const minBound = this.radius;
+        const maxBound = (GRID_SIZE - 1) - this.radius;
+        this.pos.x = Math.max(minBound, Math.min(maxBound, this.pos.x));
+        this.pos.y = Math.max(minBound, Math.min(maxBound, this.pos.y));
+    }
+    takeDamage(amount = 1) {
+        this.hp -= amount;
+        if (this.hp <= 0) {
+            this.hp = 0;
+            this.isDead = true;
+        }
+    }
+    draw(ctx) {
+        if (this.isDead)
+            return;
+        const px = this.pos.x * CELL_SIZE;
+        const py = this.pos.y * CELL_SIZE;
+        const r = this.radius * CELL_SIZE;
+        ctx.save();
+        if (this.type === 'normal') {
+            // 通常敵: 赤い円
+            ctx.beginPath();
+            ctx.arc(px, py, r, 0, Math.PI * 2);
+            ctx.fillStyle = '#ff4757';
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#c0392b';
+            ctx.stroke();
+        }
+        else if (this.type === 'elite') {
+            // 強敵: 濃紫/赤紫の円 + 二重枠 + HP文字
+            ctx.beginPath();
+            ctx.arc(px, py, r, 0, Math.PI * 2);
+            ctx.fillStyle = '#8e44ad';
+            ctx.fill();
+            ctx.lineWidth = 3;
+            ctx.strokeStyle = '#e74c3c';
+            ctx.stroke();
+            // HP数字表示
+            ctx.fillStyle = '#ffffff';
+            ctx.font = `bold ${Math.floor(r * 0.9)}px sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(String(this.hp), px, py);
+        }
+        else if (this.type === 'boss') {
+            // ボス: 巨大なダークレッド円 + 金色枠 + グロー
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = '#e74c3c';
+            ctx.beginPath();
+            ctx.arc(px, py, r, 0, Math.PI * 2);
+            ctx.fillStyle = '#2c001e';
+            ctx.fill();
+            ctx.lineWidth = 4;
+            ctx.strokeStyle = '#f1c40f';
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+            // ボスHPバー（ボスの頭上に描画）
+            const barWidth = r * 2.2;
+            const barHeight = 8;
+            const barX = px - barWidth / 2;
+            const barY = py - r - 16;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(barX, barY, barWidth, barHeight);
+            const hpPercent = this.hp / this.maxHp;
+            ctx.fillStyle = '#e74c3c';
+            ctx.fillRect(barX, barY, barWidth * hpPercent, barHeight);
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(barX, barY, barWidth, barHeight);
+            // BOSS テキスト
+            ctx.fillStyle = '#f1c40f';
+            ctx.font = `bold ${Math.floor(r * 0.55)}px sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('BOSS', px, py);
+        }
+        ctx.restore();
+    }
+}
+/**
+ * 通常敵同士の重なりを避ける簡易分離処理
+ * 修正3: 完全重複（距離0）時もランダムな方向へ分離（追補2）
+ */
+function applySeparation(enemies, dt) {
+    for (let i = 0; i < enemies.length; i++) {
+        const e1 = enemies[i];
+        if (e1.type !== 'normal' || e1.isDead)
+            continue;
+        for (let j = i + 1; j < enemies.length; j++) {
+            const e2 = enemies[j];
+            if (e2.type !== 'normal' || e2.isDead)
+                continue;
+            const dx = e1.pos.x - e2.pos.x;
+            const dy = e1.pos.y - e2.pos.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist < SEPARATION_DISTANCE) {
+                // 反発方向の決定（完全に同じ位置またはほぼ同じ位置の場合はランダムな方向）
+                let dirX, dirY;
+                if (dist > 0.0001) {
+                    dirX = dx / dist;
+                    dirY = dy / dist;
+                } else {
+                    const angle = Math.random() * Math.PI * 2;
+                    dirX = Math.cos(angle);
+                    dirY = Math.sin(angle);
+                }
+                // 反発ベクトル
+                const overlap = SEPARATION_DISTANCE - dist;
+                const pushX = dirX * overlap * SEPARATION_FORCE * dt;
+                const pushY = dirY * overlap * SEPARATION_FORCE * dt;
+                e1.pos.x += pushX;
+                e1.pos.y += pushY;
+                e2.pos.x -= pushX;
+                e2.pos.y -= pushY;
+            }
+        }
+    }
+}
+
+// ==========================================
+// 6. item.js
+// ==========================================
+class Item {
+    constructor(pos, type) {
+        this.radius = ITEM_RADIUS;
+        this.isCollected = false;
+        this.pos = { x: pos.x, y: pos.y };
+        this.type = type;
+    }
+    draw(ctx) {
+        if (this.isCollected)
+            return;
+        const px = this.pos.x * CELL_SIZE;
+        const py = this.pos.y * CELL_SIZE;
+        const r = this.radius * CELL_SIZE;
+        ctx.save();
+        if (this.type === 'fu_upgrade') {
+            // 歩の強化アイテム: 緑のオーブ + 「歩+」
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#2ed573';
+            ctx.beginPath();
+            ctx.arc(px, py, r, 0, Math.PI * 2);
+            ctx.fillStyle = '#2ed573';
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#ffffff';
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = '#ffffff';
+            ctx.font = `bold ${Math.floor(r * 0.9)}px sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('歩+', px, py);
+        }
+        else if (this.type === 'gin_piece') {
+            // 銀の駒（進化用）: 白銀色の五角形ミニ駒 + 「銀」
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#dcdde1';
+            ctx.translate(px, py);
+            ctx.beginPath();
+            ctx.moveTo(0, -r * 1.15);
+            ctx.lineTo(r * 0.85, -r * 0.4);
+            ctx.lineTo(r * 0.75, r * 0.9);
+            ctx.lineTo(-r * 0.75, r * 0.9);
+            ctx.lineTo(-r * 0.85, -r * 0.4);
+            ctx.closePath();
+            ctx.fillStyle = '#f5f6fa';
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#718093';
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = '#2f3640';
+            ctx.font = `bold ${Math.floor(r * 0.9)}px "Yu Mincho", serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('銀', 0, r * 0.1);
+        }
+        else if (this.type === 'gin_heal_piece') {
+            // 銀の駒（回復用）: 紫色の五角形ミニ駒 + 白い太字「＋」
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#8e44ad';
+            ctx.translate(px, py);
+            ctx.beginPath();
+            ctx.moveTo(0, -r * 1.15);
+            ctx.lineTo(r * 0.85, -r * 0.4);
+            ctx.lineTo(r * 0.75, r * 0.9);
+            ctx.lineTo(-r * 0.75, r * 0.9);
+            ctx.lineTo(-r * 0.85, -r * 0.4);
+            ctx.closePath();
+            ctx.fillStyle = '#9b59b6';
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#5e2d79';
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = '#ffffff';
+            ctx.font = `bold ${Math.floor(r * 1.1)}px sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('＋', 0, r * 0.05);
+        }
+        else if (this.type === 'gin_upgrade') {
+            // 銀の強化アイテム: 青紫のオーブ + 「銀+」
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#9b59b6';
+            ctx.beginPath();
+            ctx.arc(px, py, r, 0, Math.PI * 2);
+            ctx.fillStyle = '#9b59b6';
+            ctx.fill();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#ffffff';
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = '#ffffff';
+            ctx.font = `bold ${Math.floor(r * 0.9)}px sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('銀+', px, py);
+        }
+        ctx.restore();
+    }
+}
+
+// ==========================================
+// 7. door.js
+// ==========================================
+class Door {
+    constructor(pos) {
+        this.radius = DOOR_RADIUS;
+        this.pos = { x: pos.x, y: pos.y };
+    }
+    draw(ctx) {
+        const px = this.pos.x * CELL_SIZE;
+        const py = this.pos.y * CELL_SIZE;
+        const r = this.radius * CELL_SIZE;
+        ctx.save();
+        // 扉の金色グロー
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = '#ffd700';
+        // 扉の外枠
+        ctx.fillStyle = '#b8860b';
+        ctx.fillRect(px - r * 0.9, py - r * 1.1, r * 1.8, r * 2.2);
+        // 扉の内側（光）
+        ctx.fillStyle = '#ffd700';
+        ctx.fillRect(px - r * 0.7, py - r * 0.9, r * 1.4, r * 2.0);
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(px - r * 0.9, py - r * 1.1, r * 1.8, r * 2.2);
+        // 扉のアーチ装飾
+        ctx.beginPath();
+        ctx.arc(px, py - r * 0.5, r * 0.5, Math.PI, 0);
+        ctx.strokeStyle = '#b8860b';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        // 中央に「EXIT」または「扉」の文字
+        ctx.fillStyle = '#5c3d1e';
+        ctx.font = `bold ${Math.floor(r * 0.5)}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('扉', px, py + r * 0.2);
+        ctx.restore();
+    }
+}
+
+// ==========================================
+// 8. game.js
+// ==========================================
+class Game {
+    constructor(canvas, retryButton) {
+        // 段階1: 起動時は開始待機状態（READY）
+        this.state = 'ready';
+        this.elapsedTime = 0;
+        this.bullets = [];
+        this.enemies = [];
+        this.items = [];
+        this.door = null;
+        // 歩の戦闘フェーズ
+        this.fuPhase = 'mob_phase';
+        this.fuPhaseKillCount = 0; // 歩フェーズ進行カウンター（5体撃破で補充停止）
+        this.isFuReplenishStopped = false; // 累計5体撃破後の補充停止フラグ
+        // 雑魚補充待ちタイマーリスト
+        this.pendingMobRespawns = [];
+        // 銀の強敵出現用カウンター（雑魚5体撃破で強敵1体）
+        this.ginMobKillCount = 0;
+        // アイテム出現用独立カウンター
+        this.eliteKillCount = 0; // 強敵3体撃破ごとにアイテム
+        this.fuItemKillCount = 0; // 歩の雑魚10体撃破ごとに歩アイテム
+        this.hasGinPieceSpawned = false; // 銀の駒が出現したか（出現後は歩アイテムカウント停止）
+        // ボス関連
+        this.hasBossSpawned = false;
+        this.bossSpawnTimer = 0; // ボス出現後からの経過時間（最初の10秒は新規出現停止）
+        this.isBossDefeated = false; // ボス撃破フラグ（撃破後は敵新規スポーン完全停止）
+        // 銀化演出
+        this.evolutionTimer = 0;
+        // 段階1: リトライ待ち時間タイマー（追補T-4.3）
+        this.retryWaitTimer = 0;
+        // 修正2: 銀化演出中の非表示・フォーカス喪失による演出終了後ポーズ予約フラグ（追補T-7.5）
+        this.needsPauseAfterEvolution = false;
+        // 段階2: 縦向き時のポーズ案内フラグ（追補T-9）
+        this.isPortrait = false;
+        // 四隅のスポーン座標
+        this.cornerPositions = [
+            { x: 1, y: 1 },
+            { x: GRID_SIZE - 2, y: 1 },
+            { x: 1, y: GRID_SIZE - 2 },
+            { x: GRID_SIZE - 2, y: GRID_SIZE - 2 },
+        ];
+        const ctx = canvas.getContext('2d');
+        if (!ctx)
+            throw new Error('2D context not available');
+        this.ctx = ctx;
+        this.input = new InputManager();
+        this.retryButton = retryButton;
+        this.player = new Player();
+        this.retryButton.addEventListener('click', () => {
+            // 待ち時間中はリトライ不可
+            if (this.retryWaitTimer <= 0) {
+                this.retry();
+            }
+        });
+        // タッチ環境ではRetryボタンを非表示（仮想STARTが代わりに機能）（追補T-8.7）
+        if (IS_TOUCH_ENV) {
+            this.retryButton.style.display = 'none';
+            this.retryButton.style.visibility = 'hidden';
+        } else {
+            this.retryButton.style.display = 'none';
+        }
+
+        // 修正2: 非表示・フォーカス喪失時の自動ポーズ（追補T-7.5）
+        // イベント発生時に即座に状態を変更する（requestAnimationFrame停止に依存しない）
+        window.addEventListener('blur', () => {
+            this.handleAutoPause();
+        });
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                this.handleAutoPause();
+            }
+        });
+
+        // 段階2: 縦向き自動ポーズ（追補T-9.1）タッチ環境のみ（初期確認）
+        if (IS_TOUCH_ENV) {
+            this._checkPortrait();
+        }
+
+        // 開始待機状態でも初期盤面（自機および雑魚5体）を表示
+        this.spawnInitialMobs();
+    }
+    /**
+     * 段階2: 縦向き判定と自動ポーズ（追補T-9.1）
+     */
+    _checkPortrait() {
+        const portrait = window.innerHeight > window.innerWidth;
+        const wasPortrait = this.isPortrait;
+        this.isPortrait = portrait;
+        // 縦向きになった瞬間だけ自動ポーズ（横→縦の変化時のみ）
+        if (portrait && !wasPortrait) {
+            this.handleAutoPause();
+            // 縦向きへの変化時に仮想入力を解除（追補T-7.1）
+            // orientationchange時のclearInputsはInputManagerが既に呼んでいる
+        }
+        // 縦横にかかわらず縦向き案内は isPortrait の値で表示を制御する
+    }
+    /**
+     * 修正2: 非表示・フォーカス喪失時の自動ポーズ処理（追補T-7.5）
+     * 段階2: 縦向き自動ポーズも同じ仕組みで実行（追補T-9.1）
+     */
+    handleAutoPause() {
+        if (this.state === 'playing') {
+            this.state = 'paused';
+        } else if (this.state === 'evolving') {
+            this.needsPauseAfterEvolution = true;
+        }
+        // ready, paused, gameover, clear では状態変更なし
+    }
+    /**
+     * ゲーム初期化／リトライ時の完全初期化（正式仕様書 第6.3版 §8.3 準拠）
+     * 段階1: リトライ時は開始待機を経由せず即時開始（追補T-4.2）
+     */
+    initGame() {
+        this.state = 'playing';
+        this.elapsedTime = 0;
+        this.player.reset();
+        this.bullets = [];
+        this.enemies = [];
+        this.items = [];
+        this.door = null;
+        // 歩フェーズ初期化
+        this.fuPhase = 'mob_phase';
+        this.fuPhaseKillCount = 0;
+        this.isFuReplenishStopped = false;
+        this.pendingMobRespawns = [];
+        // 銀関連初期化
+        this.ginMobKillCount = 0;
+        // カウンター初期化
+        this.eliteKillCount = 0;
+        this.fuItemKillCount = 0;
+        this.hasGinPieceSpawned = false;
+        // ボス関連初期化
+        this.hasBossSpawned = false;
+        this.bossSpawnTimer = 0;
+        this.isBossDefeated = false;
+        // 演出タイマー初期化
+        this.evolutionTimer = 0;
+        // 待ち時間タイマー初期化
+        this.retryWaitTimer = 0;
+        this.needsPauseAfterEvolution = false;
+        // タッチ環境ではRetryボタンは常に非表示（仮想STARTが担う）（追補T-8.7）
+        if (!IS_TOUCH_ENV) {
+            this.retryButton.style.display = 'none';
+        }
+        // ゲーム開始時: 歩の雑魚フェーズとして雑魚5体を出現させる
+        this.spawnInitialMobs();
+    }
+    retry() {
+        this.initGame();
+    }
+    /**
+     * 雑魚フェーズ開始時の雑魚5体出現
+     */
+    spawnInitialMobs() {
+        const currentMobs = this.enemies.filter((e) => e.type === 'normal' && !e.isDead).length;
+        const need = NORMAL_ENEMY_TARGET_COUNT - currentMobs;
+        for (let i = 0; i < need; i++) {
+            const corner = this.cornerPositions[Math.floor(Math.random() * this.cornerPositions.length)];
+            this.enemies.push(new Enemy('normal', corner));
+        }
+    }
+    update(dt) {
+        // 0. 毎フレームの入力状態更新（ゲームの状態に関わらず常に実行：追補T-3.4）
+        this.input.update();
+
+        // 1. 開始待機状態（READY）の処理（追補T-4.2）
+        if (this.state === 'ready') {
+            if (this.input.isStartJustPressed()) {
+                this.state = 'playing';
+            }
+            return; // 開始待機中はゲーム内の進行をすべて停止
+        }
+
+        // 2. 銀化演出中の処理（§7, §9.2）
+        if (this.state === 'evolving') {
+            this.evolutionTimer -= dt;
+            if (this.evolutionTimer <= 0) {
+                this.evolutionTimer = 0;
+                // 修正2: 演出中の非表示・フォーカス喪失時は演出終了後にポーズへ移行
+                if (this.needsPauseAfterEvolution) {
+                    this.needsPauseAfterEvolution = false;
+                    this.state = 'paused';
+                } else {
+                    this.state = 'playing';
+                }
+            }
+            // 演出中は操作入力およびゲーム世界進行を一切遮断
+            return;
+        }
+
+        // 3. ゲームオーバー/クリア時のリトライ待ち時間処理（追補T-4.3）
+        if (this.state === 'gameover' || this.state === 'clear') {
+            if (this.retryWaitTimer > 0) {
+                this.retryWaitTimer -= dt;
+                if (this.retryWaitTimer <= 0) {
+                    this.retryWaitTimer = 0;
+                    // タッチ環境ではRetryボタンは表示しない（仮想STARTが担う）（追補T-8.7）
+                    if (!IS_TOUCH_ENV) {
+                        this.retryButton.style.display = 'block'; // 待ち時間経過後にRetryボタン表示
+                    }
+                }
+            } else {
+                // 待ち時間経過後にのみリトライ入力を受け付ける
+                if (this.input.isRetryJustPressed()) {
+                    this.retry();
+                    return;
+                }
+            }
+            return; // ゲーム終了時はゲーム進行を停止
+        }
+
+        // 4. ポーズ切り替え入力（Space / STARTボタン）
+        if (this.input.isStartJustPressed()) {
+            if (this.state === 'playing') {
+                this.state = 'paused';
+            }
+            else if (this.state === 'paused') {
+                this.state = 'playing';
+            }
+        }
+
+        // ポーズ中はゲーム世界更新を停止
+        if (this.state !== 'playing') {
+            return;
+        }
+
+        // 経過時間加算
+        this.elapsedTime += dt;
+        // 5. プレイヤー更新
+        const moveInput = this.input.getMovementInput();
+        this.player.update(dt, moveInput);
+        // 6. 自動攻撃処理
+        this.updateAttack(dt);
+        // 7. 弾更新
+        this.updateBullets(dt);
+        // 8. スポーン制御・補充タイマー更新
+        this.updateSpawns(dt);
+        // 9. 敵更新（追跡移動・簡易分離）
+        this.updateEnemies(dt);
+        // 10. 衝突判定
+        this.checkBulletEnemyCollisions();
+        this.checkEnemyPlayerCollisions();
+        this.checkPlayerItemCollisions();
+        this.checkClearConditions();
+        // 11. ゲームオーバー判定
+        if (this.player.hp <= 0) {
+            this.state = 'gameover';
+            this.retryWaitTimer = RETRY_WAIT_DURATION;
+            // タッチ環境ではRetryボタンは常に非表示（追補T-8.7）
+            if (!IS_TOUCH_ENV) {
+                this.retryButton.style.display = 'none'; // 待ち時間（約3秒）後に表示
+            }
+        }
+    }
+    /**
+     * 自動攻撃（§4 準拠）
+     */
+    updateAttack(dt) {
+        this.player.attackTimer += dt;
+        if (this.player.attackTimer >= this.player.attackInterval) {
+            this.player.attackTimer = 0;
+            this.fireBullets();
+        }
+    }
+    fireBullets() {
+        const range = this.player.attackRange;
+        const forward = this.player.getFacingVector();
+        if (this.player.piece === 'fu') {
+            // 歩: 正面方向へ1発
+            this.bullets.push(new Bullet(this.player.pos, forward, range));
+        }
+        else {
+            // 銀: 前、前左、前右、後左、後右 の5方向同時発射
+            const right = { x: -forward.y, y: forward.x };
+            const left = { x: forward.y, y: -forward.x };
+            const backward = { x: -forward.x, y: -forward.y };
+            const dirs = [
+                forward, // 前
+                { x: forward.x + left.x, y: forward.y + left.y }, // 前左
+                { x: forward.x + right.x, y: forward.y + right.y }, // 前右
+                { x: backward.x + left.x, y: backward.y + left.y }, // 後左
+                { x: backward.x + right.x, y: backward.y + right.y }, // 後右
+            ];
+            for (const dir of dirs) {
+                this.bullets.push(new Bullet(this.player.pos, dir, range));
+            }
+        }
+    }
+    updateBullets(dt) {
+        for (const b of this.bullets) {
+            b.update(dt);
+        }
+        this.bullets = this.bullets.filter((b) => !b.isDestroyed);
+    }
+    /**
+     * スポーン制御・補充処理（§5 準拠）
+     */
+    updateSpawns(dt) {
+        // A. ボス出現判定（銀・強化2到達時に1体出現）
+        if (this.player.piece === 'gin' && this.player.upgradeLevel === 2 && !this.hasBossSpawned) {
+            this.hasBossSpawned = true;
+            this.bossSpawnTimer = 0;
+            const corner = this.cornerPositions[Math.floor(Math.random() * this.cornerPositions.length)];
+            this.enemies.push(new Enemy('boss', corner));
+        }
+        // ボス出現後のタイマー加算
+        if (this.hasBossSpawned && !this.isBossDefeated) {
+            this.bossSpawnTimer += dt;
+        }
+        // B. ボス関連のスポーン抑制判定（§5.4, §5.5）
+        // - ボス出現直後10秒間は通常敵・強敵の新規出現・補充を停止
+        // - ボス撃破後は新規敵出現を完全停止
+        const isSpawnBlockedByBoss = (this.hasBossSpawned && !this.isBossDefeated && this.bossSpawnTimer < BOSS_SPAWN_GRACE_PERIOD) ||
+            this.isBossDefeated;
+        // C. 雑魚の補充タイマー処理（撃破から1秒後に補充）
+        for (let i = this.pendingMobRespawns.length - 1; i >= 0; i--) {
+            this.pendingMobRespawns[i].timer -= dt;
+            if (this.pendingMobRespawns[i].timer <= 0) {
+                this.pendingMobRespawns.splice(i, 1);
+                // ボスによる抑制中は補充を行わない
+                if (isSpawnBlockedByBoss) {
+                    continue;
+                }
+                // 歩の場合: 補充停止中または強敵フェーズ中は補充しない
+                if (this.player.piece === 'fu') {
+                    if (this.isFuReplenishStopped || this.fuPhase === 'elite_phase') {
+                        continue;
+                    }
+                }
+                // 雑魚の最大数をチェック
+                const currentMobs = this.enemies.filter((e) => e.type === 'normal' && !e.isDead).length;
+                if (currentMobs < NORMAL_ENEMY_TARGET_COUNT) {
+                    const corner = this.cornerPositions[Math.floor(Math.random() * this.cornerPositions.length)];
+                    this.enemies.push(new Enemy('normal', corner));
+                }
+            }
+        }
+    }
+    updateEnemies(dt) {
+        for (const e of this.enemies) {
+            e.update(dt, this.player.pos);
+        }
+        applySeparation(this.enemies, dt);
+    }
+    /**
+     * 弾 vs 敵の衝突判定
+     */
+    checkBulletEnemyCollisions() {
+        for (const b of this.bullets) {
+            if (b.isDestroyed)
+                continue;
+            for (const e of this.enemies) {
+                if (e.isDead)
+                    continue;
+                const dist = Math.hypot(b.pos.x - e.pos.x, b.pos.y - e.pos.y);
+                if (dist <= e.radius + 0.2) {
+                    b.isDestroyed = true; // 貫通なし
+                    e.takeDamage(1);
+                    if (e.isDead) {
+                        this.onEnemyDefeated(e);
+                    }
+                    break;
+                }
+            }
+        }
+        this.enemies = this.enemies.filter((e) => !e.isDead);
+    }
+    /**
+     * 敵撃破時コールバック（§5, §6 準拠）
+     */
+    onEnemyDefeated(enemy) {
+        // ----------------------------------------------------
+        // 1. 通常敵（雑魚）撃破時の処理
+        // ----------------------------------------------------
+        if (enemy.type === 'normal') {
+            if (this.player.piece === 'fu') {
+                // --- 歩の状態 ---
+                // (1) 歩フェーズ進行カウンター（アイテム数に依存せず進める §6.4）
+                if (this.fuPhase === 'mob_phase') {
+                    this.fuPhaseKillCount += 1;
+                    if (this.fuPhaseKillCount >= FU_PHASE_KILL_LIMIT) {
+                        this.isFuReplenishStopped = true; // 累計5体で補充停止
+                    }
+                    // 残存雑魚数の確認（今回死んだ敵を除外してカウント）
+                    const remainingMobs = this.enemies.filter((e) => e.type === 'normal' && !e.isDead && e !== enemy).length;
+                    if (this.isFuReplenishStopped && remainingMobs === 0) {
+                        // 残存雑魚が0体になったら強敵フェーズへ移行し、強敵を1体スポーン
+                        this.fuPhase = 'elite_phase';
+                        this.spawnElite();
+                    }
+                }
+                // (2) 歩強化アイテム出現カウンター（画面上アイテム10個未満の場合のみ進める §6.3, §6.4）
+                if (!this.hasGinPieceSpawned && this.items.length < MAX_ITEMS_ON_FIELD) {
+                    this.fuItemKillCount += 1;
+                    if (this.fuItemKillCount >= FU_MOB_KILLS_PER_ITEM) {
+                        this.fuItemKillCount = 0;
+                        this.spawnItem();
+                    }
+                }
+                // (3) 補充予約（補充が停止されていない場合のみ）
+                if (!this.isFuReplenishStopped && this.fuPhase === 'mob_phase') {
+                    this.pendingMobRespawns.push({ timer: NORMAL_RESPAWN_DELAY });
+                }
+            }
+            else {
+                // --- 銀の状態 ---
+                // 雑魚撃破から1秒後に補充予約
+                this.pendingMobRespawns.push({ timer: NORMAL_RESPAWN_DELAY });
+                // ユーザー確定仕様:
+                // 「銀の状態では、雑魚敵を5体倒すごとに強敵を1体出現させる。強敵撃破後の再出現は時間経過ではなく、次に雑魚敵を5体倒した時点とする。」
+                const hasElite = this.enemies.some((e) => e.type === 'elite' && !e.isDead && e !== enemy);
+                if (!hasElite && !this.isBossDefeated) {
+                    this.ginMobKillCount += 1;
+                    if (this.ginMobKillCount >= GIN_MOB_KILLS_PER_ELITE) {
+                        this.ginMobKillCount = 0;
+                        this.spawnElite();
+                    }
+                }
+            }
+        }
+        // ----------------------------------------------------
+        // 2. 強敵撃破時の処理
+        // ----------------------------------------------------
+        else if (enemy.type === 'elite') {
+            // 強敵撃破アイテムカウンター（画面上アイテム10個未満の場合のみ進める §6.2, §6.4）
+            if (this.items.length < MAX_ITEMS_ON_FIELD) {
+                this.eliteKillCount += 1;
+                if (this.eliteKillCount >= ELITE_KILLS_PER_ITEM) {
+                    this.eliteKillCount = 0;
+                    this.spawnItem();
+                }
+            }
+            if (this.player.piece === 'fu') {
+                // 歩の場合: 強敵撃破で次の雑魚フェーズを開始し、カウンターリセット（§5.2）
+                this.fuPhase = 'mob_phase';
+                this.fuPhaseKillCount = 0;
+                this.isFuReplenishStopped = false;
+                // 雑魚フェーズ開始時の雑魚補充（最大5体まで出現）
+                this.spawnInitialMobs();
+            }
+            else {
+                // 銀の場合: 強敵撃破後は、次に雑魚を5体倒した時点で再出現（ginMobKillCount は0から再カウント）
+                this.ginMobKillCount = 0;
+            }
+        }
+        // ----------------------------------------------------
+        // 3. ボス撃破時の処理
+        // ----------------------------------------------------
+        else if (enemy.type === 'boss') {
+            this.isBossDefeated = true;
+            this.spawnDoor();
+        }
+    }
+    spawnElite() {
+        // 画面上にすでに強敵が存在する場合はスポーンしない
+        const hasElite = this.enemies.some((e) => e.type === 'elite' && !e.isDead);
+        if (hasElite)
+            return;
+        const corner = this.cornerPositions[Math.floor(Math.random() * this.cornerPositions.length)];
+        this.enemies.push(new Enemy('elite', corner));
+    }
+    /**
+     * アイテム出現処理（§6 準拠）
+     */
+    spawnItem() {
+        if (this.items.length >= MAX_ITEMS_ON_FIELD) {
+            return;
+        }
+        let itemType = 'fu_upgrade';
+        if (this.player.piece === 'fu') {
+            if (this.player.upgradeLevel < 2) {
+                itemType = 'fu_upgrade';
+            }
+            else {
+                itemType = 'gin_piece';
+                this.hasGinPieceSpawned = true; // 銀の駒が出現した時点で歩アイテム出現カウント停止（§6.3）
+            }
+        }
+        else {
+            if (this.player.upgradeLevel < 2) {
+                itemType = 'gin_upgrade';
+            }
+            else {
+                itemType = 'gin_heal_piece'; // 銀強化2到達後は最初から回復用銀駒を生成
+            }
+        }
+        const rx = 0.8 + Math.random() * (GRID_SIZE - 2.6);
+        const ry = 0.8 + Math.random() * (GRID_SIZE - 2.6);
+        this.items.push(new Item({ x: rx, y: ry }, itemType));
+    }
+    spawnDoor() {
+        const rx = 1.0 + Math.random() * (GRID_SIZE - 3.0);
+        const ry = 1.0 + Math.random() * (GRID_SIZE - 3.0);
+        this.door = new Door({ x: rx, y: ry });
+    }
+    /**
+     * 敵 vs プレイヤーの接触判定（接触継続時の多重被弾防止）
+     */
+    checkEnemyPlayerCollisions() {
+        for (const e of this.enemies) {
+            if (e.isDead)
+                continue;
+            const dist = Math.hypot(e.pos.x - this.player.pos.x, e.pos.y - this.player.pos.y);
+            const isContacting = dist <= e.radius + PLAYER_RADIUS;
+            if (isContacting) {
+                if (!e.wasContacting && !this.player.isInvincible) {
+                    this.player.takeDamage();
+                }
+                e.wasContacting = true;
+            }
+            else {
+                e.wasContacting = false;
+            }
+        }
+    }
+    /**
+     * プレイヤー vs アイテムの取得判定（§6.7 準拠）
+     */
+    checkPlayerItemCollisions() {
+        for (const item of this.items) {
+            if (item.isCollected)
+                continue;
+            const dist = Math.hypot(item.pos.x - this.player.pos.x, item.pos.y - this.player.pos.y);
+            if (dist <= item.radius + PLAYER_RADIUS) {
+                item.isCollected = true;
+                this.applyItemEffect(item.type);
+            }
+        }
+        this.items = this.items.filter((i) => !i.isCollected);
+    }
+    /**
+     * アイテム効果の適用（§6.7, §7 準拠）
+     */
+    applyItemEffect(type) {
+        if (type === 'fu_upgrade') {
+            if (this.player.piece === 'fu' && this.player.upgradeLevel < 2) {
+                this.player.upgradeFu();
+            }
+        }
+        else if (type === 'gin_piece') {
+            if (this.player.piece === 'fu' && this.player.upgradeLevel === 2) {
+                // 歩・強化2で銀の駒を取得 -> 銀へ進化 ＆ 約3秒間の自動停止演出（§7, §9.2）
+                this.player.evolveToGin();
+                this.state = 'evolving';
+                this.evolutionTimer = EVOLUTION_DURATION;
+                // 銀進化時: 画面上に残っている歩アイテムをすべて消滅させる（§6.3）
+                this.items = this.items.filter((i) => i.type !== 'fu_upgrade');
+                // 銀の戦闘構造へ移行（雑魚を5体揃える）
+                this.spawnInitialMobs();
+            }
+            // 銀Lv0・Lv1等で進化用銀駒を取得した場合は効果なく消滅（仕様6）
+        }
+        else if (type === 'gin_heal_piece') {
+            // 回復用銀駒を取得した場合（仕様2, 3, 4）
+            if (this.player.hp < this.player.maxHp) {
+                this.player.heal(1);
+            }
+            // HPが最大の場合は回復せず消滅
+        }
+        else if (type === 'gin_upgrade') {
+            if (this.player.piece === 'gin' && this.player.upgradeLevel < 2) {
+                this.player.upgradeGin();
+                // 銀・強化2に到達した瞬間の処理（仕様1, 5）
+                if (this.player.upgradeLevel === 2) {
+                    // 画面上に残っている未取得の進化用銀駒をすべて回復用銀駒へ変化させる
+                    for (const item of this.items) {
+                        if (!item.isCollected && item.type === 'gin_piece') {
+                            item.type = 'gin_heal_piece';
+                        }
+                    }
+                }
+            }
+        }
+    }
+    /**
+     * クリア条件判定（§5.5 準拠）
+     * - ドアに触れる、または残存している通常敵・強敵をすべて撃破するとクリア
+     */
+    checkClearConditions() {
+        if (!this.isBossDefeated)
+            return;
+        // 条件1: ドアに接触
+        if (this.door) {
+            const dist = Math.hypot(this.door.pos.x - this.player.pos.x, this.door.pos.y - this.player.pos.y);
+            if (dist <= this.door.radius + PLAYER_RADIUS) {
+                this.triggerClear();
+                return;
+            }
+        }
+        // 条件2: ボス撃破後、残存敵（通常敵・強敵）がすべて0体になった場合（ドアに触れなくても自動クリア）
+        const remainingEnemies = this.enemies.filter((e) => !e.isDead).length;
+        if (remainingEnemies === 0) {
+            this.triggerClear();
+        }
+    }
+    triggerClear() {
+        this.state = 'clear';
+        this.retryWaitTimer = RETRY_WAIT_DURATION;
+        // タッチ環境ではRetryボタンは常に非表示（追補T-8.7）
+        if (!IS_TOUCH_ENV) {
+            this.retryButton.style.display = 'none'; // 待ち時間（約3秒）後に表示
+        }
+    }
+    draw() {
+        // 1. 背景描画
+        this.drawBackground();
+        // 2. 扉描画
+        if (this.door) {
+            this.door.draw(this.ctx);
+        }
+        // 3. アイテム描画
+        for (const item of this.items) {
+            item.draw(this.ctx);
+        }
+        // 4. 弾描画
+        for (const bullet of this.bullets) {
+            bullet.draw(this.ctx);
+        }
+        // 5. 敵描画
+        for (const enemy of this.enemies) {
+            enemy.draw(this.ctx);
+        }
+        // 6. プレイヤー描画
+        this.player.draw(this.ctx);
+        // 7. HUD描画
+        this.drawHUD();
+        // 8. 状態オーバーレイ（開始待機、ポーズ、銀化演出、ゲームオーバー、クリア）
+        this.drawOverlay();
+    }
+    drawBackground() {
+        for (let r = 0; r < GRID_SIZE; r++) {
+            for (let c = 0; c < GRID_SIZE; c++) {
+                this.ctx.fillStyle = (r + c) % 2 === 0 ? '#2d5a27' : '#265024';
+                this.ctx.fillRect(c * CELL_SIZE, r * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+            }
+        }
+        for (const corner of this.cornerPositions) {
+            this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+            this.ctx.lineWidth = 1;
+            this.ctx.strokeRect((corner.x - 0.5) * CELL_SIZE, (corner.y - 0.5) * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+        }
+    }
+    drawHUD() {
+        this.ctx.save();
+        // 背景帯
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+        this.ctx.fillRect(10, 10, 480, 48);
+        this.ctx.strokeStyle = '#444444';
+        this.ctx.lineWidth = 1;
+        this.ctx.strokeRect(10, 10, 480, 48);
+        // HP表示
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.font = 'bold 14px sans-serif';
+        this.ctx.textAlign = 'left';
+        this.ctx.textBaseline = 'middle';
+        this.ctx.fillText('HP:', 20, 34);
+        for (let i = 0; i < this.player.maxHp; i++) {
+            this.ctx.beginPath();
+            this.ctx.arc(60 + i * 22, 34, 8, 0, Math.PI * 2);
+            this.ctx.fillStyle = i < this.player.hp ? '#ff4757' : '#444444';
+            this.ctx.fill();
+            this.ctx.lineWidth = 1.5;
+            this.ctx.strokeStyle = '#ffffff';
+            this.ctx.stroke();
+        }
+        // 駒と強化段階
+        const pieceName = this.player.piece === 'fu' ? '歩' : '銀';
+        const upgradeText = `Lv.${this.player.upgradeLevel}`;
+        this.ctx.fillStyle = this.player.piece === 'fu' ? '#e8c39e' : '#7bed9f';
+        this.ctx.font = 'bold 15px sans-serif';
+        this.ctx.fillText(`【${pieceName}】${upgradeText}`, 140, 34);
+        // 強敵撃破カウンター (0/3)
+        this.ctx.fillStyle = '#f1c40f';
+        this.ctx.font = '13px sans-serif';
+        this.ctx.fillText(`強敵: ${this.eliteKillCount}/${ELITE_KILLS_PER_ITEM}`, 240, 34);
+        // 歩の雑魚アイテムカウンター / フェーズ情報
+        if (this.player.piece === 'fu') {
+            this.ctx.fillStyle = '#a4b0be';
+            this.ctx.font = '12px sans-serif';
+            const phaseStr = this.fuPhase === 'mob_phase' ? `雑魚(${this.fuPhaseKillCount}/5)` : '強敵戦';
+            this.ctx.fillText(`P: ${phaseStr}`, 330, 26);
+            this.ctx.fillText(`歩品: ${this.fuItemKillCount}/${FU_MOB_KILLS_PER_ITEM}`, 330, 42);
+        }
+        else {
+            this.ctx.fillStyle = '#a4b0be';
+            this.ctx.font = '12px sans-serif';
+            this.ctx.fillText(`強敵呼出: ${this.ginMobKillCount}/${GIN_MOB_KILLS_PER_ELITE}`, 330, 34);
+        }
+        // アイテム数 / 10
+        this.ctx.fillStyle = this.items.length >= MAX_ITEMS_ON_FIELD ? '#ff4757' : '#ced6e0';
+        this.ctx.font = '12px sans-serif';
+        this.ctx.fillText(`宝: ${this.items.length}/${MAX_ITEMS_ON_FIELD}`, 425, 34);
+        // 経過時間（右上に表示、9999秒で表示上カンスト §8.4）
+        const displayTimeSec = Math.min(MAX_ELAPSED_TIME, Math.floor(this.elapsedTime));
+        const min = Math.floor(displayTimeSec / 60);
+        const sec = displayTimeSec % 60;
+        const timeStr = `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+        this.ctx.fillRect(CANVAS_SIZE - 120, 10, 110, 34);
+        this.ctx.strokeStyle = '#444444';
+        this.ctx.strokeRect(CANVAS_SIZE - 120, 10, 110, 34);
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.font = 'bold 14px monospace';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText(timeStr, CANVAS_SIZE - 65, 27);
+        this.ctx.restore();
+    }
+    /**
+     * 段階2: タッチ環境かどうか・縦向きかどうかで案内文を切り替える（追補T-10）
+     */
+    drawOverlay() {
+        if (this.state === 'playing')
+            return;
+        this.ctx.save();
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        // 銀化演出中（§7, §9.2）
+        if (this.state === 'evolving') {
+            // 画面全体に薄い発光オーバーレイ
+            const alpha = 0.3 + 0.2 * Math.sin(this.evolutionTimer * 10);
+            this.ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+            this.ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+            // 中央の演出帯
+            this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+            this.ctx.fillRect(0, CANVAS_SIZE / 2 - 60, CANVAS_SIZE, 120);
+            this.ctx.strokeStyle = '#ffd700';
+            this.ctx.lineWidth = 3;
+            this.ctx.strokeRect(0, CANVAS_SIZE / 2 - 60, CANVAS_SIZE, 120);
+            this.ctx.fillStyle = '#ffd700';
+            this.ctx.font = 'bold 36px "Yu Mincho", serif';
+            this.ctx.fillText('EVOLUTION', CANVAS_SIZE / 2, CANVAS_SIZE / 2 - 18);
+            this.ctx.fillStyle = '#ffffff';
+            this.ctx.font = 'bold 22px "Yu Mincho", serif';
+            this.ctx.fillText('歩  ───→  銀', CANVAS_SIZE / 2, CANVAS_SIZE / 2 + 25);
+            this.ctx.restore();
+            return;
+        }
+        // その他のオーバーレイ（半透明黒背景）
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        this.ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+
+        if (this.state === 'ready') {
+            this.ctx.fillStyle = '#ffffff';
+            this.ctx.font = 'bold 44px sans-serif';
+            this.ctx.fillText('READY', CANVAS_SIZE / 2, CANVAS_SIZE / 2 - 30);
+            this.ctx.font = '16px sans-serif';
+            this.ctx.fillStyle = '#aaaaaa';
+            if (IS_TOUCH_ENV) {
+                // タッチ環境の案内文（追補T-10）
+                if (this.isPortrait) {
+                    // 縦向き: 横向き推奨も案内
+                    this.ctx.fillText('「スタート」ボタンで開始', CANVAS_SIZE / 2, CANVAS_SIZE / 2 + 20);
+                    this.ctx.fillStyle = '#ffcc00';
+                    this.ctx.font = '14px sans-serif';
+                    this.ctx.fillText('横向きでのプレイを推奨します', CANVAS_SIZE / 2, CANVAS_SIZE / 2 + 48);
+                } else {
+                    this.ctx.fillText('「スタート」ボタンで開始', CANVAS_SIZE / 2, CANVAS_SIZE / 2 + 20);
+                }
+            } else {
+                // PC環境の案内文
+                this.ctx.fillText('Spaceキー または STARTボタン で開始', CANVAS_SIZE / 2, CANVAS_SIZE / 2 + 20);
+            }
+        }
+        else if (this.state === 'paused') {
+            this.ctx.fillStyle = '#ffffff';
+            this.ctx.font = 'bold 44px sans-serif';
+            this.ctx.fillText('PAUSE', CANVAS_SIZE / 2, CANVAS_SIZE / 2 - 30);
+            this.ctx.font = '16px sans-serif';
+            this.ctx.fillStyle = '#aaaaaa';
+            if (IS_TOUCH_ENV) {
+                // タッチ環境の案内文（追補T-10）
+                if (this.isPortrait) {
+                    // 縦向きでのポーズ: 横向き推奨も案内（追補T-10）
+                    this.ctx.fillText('「再開」ボタンで再開', CANVAS_SIZE / 2, CANVAS_SIZE / 2 + 20);
+                    this.ctx.fillStyle = '#ffcc00';
+                    this.ctx.font = '14px sans-serif';
+                    this.ctx.fillText('横向きでのプレイを推奨します', CANVAS_SIZE / 2, CANVAS_SIZE / 2 + 48);
+                } else {
+                    this.ctx.fillText('「再開」ボタンで再開', CANVAS_SIZE / 2, CANVAS_SIZE / 2 + 20);
+                }
+            } else {
+                // PC環境の案内文
+                this.ctx.fillText('Spaceキー または STARTボタン で再開', CANVAS_SIZE / 2, CANVAS_SIZE / 2 + 20);
+            }
+        }
+        else if (this.state === 'gameover') {
+            this.ctx.fillStyle = '#ff4757';
+            this.ctx.font = 'bold 50px sans-serif';
+            this.ctx.fillText('GAME OVER', CANVAS_SIZE / 2, CANVAS_SIZE / 2 - 40);
+            // 段階1: 待ち時間終了後にリトライ案内文を表示（追補T-4.3, T-10）
+            if (this.retryWaitTimer <= 0) {
+                this.ctx.font = '18px sans-serif';
+                this.ctx.fillStyle = '#ffffff';
+                if (IS_TOUCH_ENV) {
+                    this.ctx.fillText('「リトライ」ボタンでリトライ', CANVAS_SIZE / 2, CANVAS_SIZE / 2 + 20);
+                } else {
+                    this.ctx.fillText('Spaceキー、Rキー または STARTボタン でリトライ', CANVAS_SIZE / 2, CANVAS_SIZE / 2 + 20);
+                }
+            }
+        }
+        else if (this.state === 'clear') {
+            this.ctx.fillStyle = '#ffd700';
+            this.ctx.font = 'bold 50px sans-serif';
+            this.ctx.fillText('STAGE CLEAR!', CANVAS_SIZE / 2, CANVAS_SIZE / 2 - 40);
+            this.ctx.font = '18px sans-serif';
+            this.ctx.fillStyle = '#ffffff';
+            this.ctx.fillText('おめでとうございます！', CANVAS_SIZE / 2, CANVAS_SIZE / 2 + 10);
+            // 段階1: 待ち時間終了後にリトライ案内文を表示（追補T-4.3, T-10）
+            if (this.retryWaitTimer <= 0) {
+                this.ctx.font = '15px sans-serif';
+                this.ctx.fillStyle = '#aaaaaa';
+                if (IS_TOUCH_ENV) {
+                    this.ctx.fillText('「リトライ」ボタンでリトライ', CANVAS_SIZE / 2, CANVAS_SIZE / 2 + 45);
+                } else {
+                    this.ctx.fillText('Spaceキー、Rキー または STARTボタン でリトライ', CANVAS_SIZE / 2, CANVAS_SIZE / 2 + 45);
+                }
+            }
+        }
+        this.ctx.restore();
+    }
+}
+
+// ==========================================
+// 段階2: 仮想十字キー（VirtualDpad）（追補T-5）
+// ==========================================
+class VirtualDpad {
+    /**
+     * @param {HTMLCanvasElement} canvas - 仮想十字キー描画用canvasElement
+     * @param {InputManager} inputManager - 方向を書き込む対象のInputManager
+     */
+    constructor(canvas, inputManager) {
+        this.canvas = canvas;
+        this.input = inputManager;
+        this.ctx = canvas.getContext('2d');
+
+        // 十字キーの状態
+        this.activePointerId = null; // 現在追跡中のpointerID
+        this.currentDir = null;      // 現在の判定方向（null | 'up'|'down'|'left'|'right'）
+        this.lastDir = null;         // 直前の方向（斜め領域での維持用）
+
+        // 配置位置（JavaScriptで動的設定）
+        this.left = 0;
+        this.top = 0;
+
+        // ポインターイベント登録（同時操作のためsetCapture不使用、document全体で受ける）
+        canvas.addEventListener('pointerdown', this._onDown.bind(this), { passive: false });
+        document.addEventListener('pointermove', this._onMove.bind(this), { passive: false });
+        document.addEventListener('pointerup', this._onUp.bind(this), { passive: false });
+        document.addEventListener('pointercancel', this._onCancel.bind(this), { passive: false });
+    }
+
+    /**
+     * 十字キーの位置とサイズを設定し、Canvasを再配置する
+     * 見た目の十字キー(left, top)の外側にDPAD_HIT_PADDING分の見えない反応範囲を付加して配置
+     * 修正E: 高解像度画面(devicePixelRatio)に合わせてCanvasバッファサイズを設定
+     * @param {number} left - fixed左端座標（px、見た目の十字キー基準）
+     * @param {number} top - fixed上端座標（px、見た目の十字キー基準）
+     */
+    setPosition(left, top) {
+        this.left = left;
+        this.top = top;
+        const dpr = window.devicePixelRatio || 1;
+        const totalSize = DPAD_SIZE + DPAD_HIT_PADDING * 2;
+        this.canvas.style.left = `${left - DPAD_HIT_PADDING}px`;
+        this.canvas.style.top = `${top - DPAD_HIT_PADDING}px`;
+        this.canvas.style.width = `${totalSize}px`;
+        this.canvas.style.height = `${totalSize}px`;
+        this.canvas.width = Math.round(totalSize * dpr);
+        this.canvas.height = Math.round(totalSize * dpr);
+        this.draw();
+    }
+
+    /**
+     * canvas内座標から領域または方向を判定する
+     * @param {number} cx - canvas内x座標（見た目の十字キー基準）
+     * @param {number} cy - canvas内y座標（見た目の十字キー基準）
+     * @returns {null|'up'|'down'|'left'|'right'|'center'|'diagonal'} 判定領域
+     */
+    _hitTest(cx, cy) {
+        const half = DPAD_SIZE / 2;
+        const dx = cx - half;
+        const dy = cy - half;
+        const deadZone = DPAD_SIZE * DPAD_DEAD_ZONE_RATIO;
+        const dist = Math.hypot(dx, dy);
+
+        // 不感帯
+        if (dist <= deadZone) return null;
+
+        const armWidth = DPAD_SIZE * DPAD_ARM_RATIO / 2; // 腕の半幅
+        const absDx = Math.abs(dx);
+        const absDy = Math.abs(dy);
+
+        // 中央の四角（上下左右の腕が重なる中央領域）
+        if (absDx <= armWidth && absDy <= armWidth) {
+            return 'center';
+        }
+
+        // 中央の四角の外（腕の先）
+        if (absDx <= armWidth && absDy > armWidth) {
+            return dy < 0 ? 'up' : 'down';
+        }
+        if (absDy <= armWidth && absDx > armWidth) {
+            return dx < 0 ? 'left' : 'right';
+        }
+
+        // 斜めの領域（腕の外）: 直前の方向を維持
+        return 'diagonal';
+    }
+
+    /**
+     * 指の位置から最終的な出力方向を決定する（追補T-5.2 更新版）
+     * @param {number} cx - canvas内x座標（見た目の十字キー基準）
+     * @param {number} cy - canvas内y座標（見た目の十字キー基準）
+     * @param {boolean} isFirstTouch - 最初のタッチかどうか
+     * @returns {null|'up'|'down'|'left'|'right'}
+     */
+    _calcDir(cx, cy, isFirstTouch) {
+        const half = DPAD_SIZE / 2;
+        const dx = cx - half;
+        const dy = cy - half;
+        const deadZone = DPAD_SIZE * DPAD_DEAD_ZONE_RATIO;
+        const dist = Math.hypot(dx, dy);
+
+        // 不感帯: 方向なし
+        if (dist <= deadZone) {
+            return null;
+        }
+
+        const armWidth = DPAD_SIZE * DPAD_ARM_RATIO / 2;
+        const absDx = Math.abs(dx);
+        const absDy = Math.abs(dy);
+        const prevDir = (isFirstTouch || this.lastDir === null) ? null : this.lastDir;
+
+        // 1. 中央の四角（縦成分・横成分がともに腕の半幅以内、上下左右の腕が重なる領域）
+        if (absDx <= armWidth && absDy <= armWidth) {
+            if (prevDir === 'up' || prevDir === 'down') {
+                // すでに縦方向が決まっている場合: 横軸が現在の縦軸の1.3倍を超えるまで維持
+                if (absDx > absDy * DPAD_AXIS_THRESHOLD_RATIO) {
+                    return dx < 0 ? 'left' : 'right';
+                }
+                return prevDir;
+            } else if (prevDir === 'left' || prevDir === 'right') {
+                // すでに横方向が決まっている場合: 縦軸が現在の横軸の1.3倍を超えるまで維持
+                if (absDy > absDx * DPAD_AXIS_THRESHOLD_RATIO) {
+                    return dy < 0 ? 'up' : 'down';
+                }
+                return prevDir;
+            } else {
+                // 初手（直前なし）: 縦横の大きいほうの軸
+                return absDy >= absDx ? (dy < 0 ? 'up' : 'down') : (dx < 0 ? 'left' : 'right');
+            }
+        }
+
+        // 2. 中央の四角の外（腕の先）
+        if (absDx <= armWidth && absDy > armWidth) {
+            return dy < 0 ? 'up' : 'down';
+        }
+        if (absDy <= armWidth && absDx > armWidth) {
+            return dx < 0 ? 'left' : 'right';
+        }
+
+        // 3. 斜めの領域（四隅: absDx > armWidth && absDy > armWidth）
+        if (prevDir !== null) {
+            return prevDir; // 直前の方向を維持
+        }
+        // 初手斜め: 大きいほうの軸
+        return absDy >= absDx ? (dy < 0 ? 'up' : 'down') : (dx < 0 ? 'left' : 'right');
+    }
+
+    /**
+     * 修正A・調整: 表示サイズに合わせ、見た目の十字キー基準の座標(cx, cy)に変換
+     * 反応範囲（DPAD_HIT_PADDING）が外側に広がっても、中心や腕の判定座標は見た目と完全一致
+     */
+    _getLocalCoords(e, rect) {
+        const totalSize = DPAD_SIZE + DPAD_HIT_PADDING * 2;
+        const rw = rect.width > 0 ? rect.width : totalSize;
+        const rh = rect.height > 0 ? rect.height : totalSize;
+        const totalX = ((e.clientX - rect.left) / rw) * totalSize;
+        const totalY = ((e.clientY - rect.top) / rh) * totalSize;
+        // 見た目の十字キー基準の座標 (cx, cy) に変換（原点が見た目の左上、中心が DPAD_SIZE / 2）
+        const cx = totalX - DPAD_HIT_PADDING;
+        const cy = totalY - DPAD_HIT_PADDING;
+        return { cx, cy };
+    }
+
+    _onDown(e) {
+        // すでに追跡中のポインターがある場合は無視（1指のみ）
+        if (this.activePointerId !== null) return;
+        e.preventDefault();
+        const rect = this.canvas.getBoundingClientRect();
+        // このpointerがDpadのcanvas上（見えない反応範囲を含む）にあるか確認
+        if (e.clientX < rect.left || e.clientX > rect.right ||
+            e.clientY < rect.top  || e.clientY > rect.bottom) return;
+
+        this.activePointerId = e.pointerId;
+        const { cx, cy } = this._getLocalCoords(e, rect);
+        const newDir = this._calcDir(cx, cy, true);
+        this._setDir(newDir);
+    }
+
+    _onMove(e) {
+        if (e.pointerId !== this.activePointerId) return;
+        e.preventDefault();
+        const rect = this.canvas.getBoundingClientRect();
+        // 指が領域の外へはみ出しても、中心から見た位置で継続判定（追補T-5.1）
+        const { cx, cy } = this._getLocalCoords(e, rect);
+        const newDir = this._calcDir(cx, cy, false);
+        this._setDir(newDir);
+    }
+
+    _onUp(e) {
+        if (e.pointerId !== this.activePointerId) return;
+        e.preventDefault();
+        this.activePointerId = null;
+        this._setDir(null);
+        // 指を離したら lastDir も null にする（次のタッチが「最初のタッチ」扱いになる）
+        this.lastDir = null;
+    }
+
+    _onCancel(e) {
+        if (e.pointerId !== this.activePointerId) return;
+        this.activePointerId = null;
+        this._setDir(null);
+        this.lastDir = null;
+    }
+
+    /**
+     * 方向を設定してInputManagerへ反映・描画更新
+     */
+    _setDir(dir) {
+        if (dir !== null) {
+            this.lastDir = dir;
+        }
+        this.currentDir = dir;
+        this.input.virtualDpadDir = dir;
+        this.draw();
+    }
+
+    /**
+     * 仮想十字キーを描画する（追補T-5.4）
+     * 修正E: devicePixelRatio に合わせて描画
+     * 見た目の十字キーを (DPAD_HIT_PADDING, DPAD_HIT_PADDING) に描画
+     * 押している方向の腕をはっきり光らせる。判定結果と常に一致させる。
+     */
+    draw() {
+        const ctx = this.ctx;
+        const size = DPAD_SIZE;
+        const half = size / 2;
+        const armW = size * DPAD_ARM_RATIO / 2;
+        const dpr = window.devicePixelRatio || 1;
+        const totalSize = DPAD_SIZE + DPAD_HIT_PADDING * 2;
+
+        ctx.save();
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, totalSize, totalSize);
+        // 見た目の十字キーの描画原点を (DPAD_HIT_PADDING, DPAD_HIT_PADDING) に移動
+        ctx.translate(DPAD_HIT_PADDING, DPAD_HIT_PADDING);
+        ctx.globalAlpha = DPAD_OPACITY;
+
+        // 腕ごとに色を決定
+        const activeDir = this.currentDir;
+
+        // 十字形を4本の腕として描画
+        // 上の腕
+        this._drawArm(ctx, half - armW, 0, armW * 2, half, activeDir === 'up');
+        // 下の腕
+        this._drawArm(ctx, half - armW, half, armW * 2, half, activeDir === 'down');
+        // 左の腕
+        this._drawArm(ctx, 0, half - armW, half, armW * 2, activeDir === 'left');
+        // 右の腕
+        this._drawArm(ctx, half, half - armW, half, armW * 2, activeDir === 'right');
+        // 中央（不感帯）
+        ctx.fillStyle = 'rgba(60, 60, 80, 0.8)';
+        const deadZone = size * DPAD_DEAD_ZONE_RATIO;
+        ctx.beginPath();
+        ctx.arc(half, half, deadZone, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 矢印テキスト（各腕の中央に描画）
+        ctx.font = `bold ${Math.floor(armW * 0.85)}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        // 上
+        ctx.fillStyle = activeDir === 'up' ? '#ffffff' : 'rgba(200,200,220,0.7)';
+        ctx.fillText('▲', half, half / 2 - 2);
+        // 下
+        ctx.fillStyle = activeDir === 'down' ? '#ffffff' : 'rgba(200,200,220,0.7)';
+        ctx.fillText('▼', half, half + half / 2 + 2);
+        // 左
+        ctx.fillStyle = activeDir === 'left' ? '#ffffff' : 'rgba(200,200,220,0.7)';
+        ctx.fillText('◀', half / 2 - 2, half);
+        // 右
+        ctx.fillStyle = activeDir === 'right' ? '#ffffff' : 'rgba(200,200,220,0.7)';
+        ctx.fillText('▶', half + half / 2 + 2, half);
+
+        ctx.restore();
+    }
+
+    /**
+     * 腕の矩形を描画する
+     * 修正D: 古いSafari（iPadOS 16より前）で roundRect がない場合の通常四角形フォールバック
+     */
+    _drawArm(ctx, x, y, w, h, active) {
+        if (active) {
+            // 光らせる（追補T-5.4）
+            ctx.fillStyle = 'rgba(80, 160, 255, 0.85)';
+            ctx.strokeStyle = 'rgba(150, 210, 255, 0.9)';
+        } else {
+            // 控えめな色
+            ctx.fillStyle = 'rgba(40, 50, 70, 0.75)';
+            ctx.strokeStyle = 'rgba(100, 120, 160, 0.6)';
+        }
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        const r = 6;
+        if (typeof ctx.roundRect === 'function') {
+            ctx.roundRect(x, y, w, h, r);
+        } else {
+            ctx.rect(x, y, w, h);
+        }
+        ctx.fill();
+        ctx.stroke();
+    }
+}
+
+// ==========================================
+// 段階2: 仮想STARTボタン（VirtualStartButton）（追補T-6）
+// ==========================================
+class VirtualStartButton {
+    /**
+     * @param {HTMLElement} el - 仮想STARTのDOM要素
+     * @param {InputManager} inputManager
+     * @param {Game} game - 現在のゲーム状態を参照するためのGameインスタンス
+     */
+    constructor(el, inputManager, game) {
+        this.el = el;
+        this.input = inputManager;
+        this.game = game;
+
+        this.activePointerId = null;
+        this.isPressed = false;
+
+        // サイズ・初期スタイル
+        el.style.width = `${VSTART_SIZE}px`;
+        el.style.height = `${VSTART_SIZE}px`;
+        el.style.lineHeight = `${VSTART_SIZE}px`;
+        el.style.borderRadius = '50%';
+
+        // ポインターイベント
+        el.addEventListener('pointerdown', this._onDown.bind(this), { passive: false });
+        document.addEventListener('pointerup', this._onUp.bind(this), { passive: false });
+        document.addEventListener('pointercancel', this._onCancel.bind(this), { passive: false });
+    }
+
+    /**
+     * 仮想STARTボタンの位置を設定する
+     * @param {number} left - fixed左端座標（px）
+     * @param {number} top - fixed上端座標（px）
+     */
+    setPosition(left, top) {
+        this.el.style.left = `${left}px`;
+        this.el.style.top = `${top}px`;
+    }
+
+    _onDown(e) {
+        if (this.activePointerId !== null) return;
+        e.preventDefault();
+        // 現在のゲーム状態で押せるかチェック
+        if (!this._isEnabled()) return;
+
+        this.activePointerId = e.pointerId;
+        this.isPressed = true;
+        // virtualStartPendingをtrueにする（ワンショット、次フレームのupdate()で消費）（追補T-6.2）
+        this.input.virtualStartPending = true;
+        this._updateStyle();
+    }
+
+    _onUp(e) {
+        if (e.pointerId !== this.activePointerId) return;
+        e.preventDefault();
+        this.activePointerId = null;
+        this.isPressed = false;
+        this._updateStyle();
+    }
+
+    _onCancel(e) {
+        if (e.pointerId !== this.activePointerId) return;
+        this.activePointerId = null;
+        this.isPressed = false;
+        this._updateStyle();
+    }
+
+    /**
+     * 現在のゲーム状態で仮想STARTが押せるかどうか（追補T-6.1）
+     */
+    _isEnabled() {
+        const state = this.game.state;
+        if (state === 'evolving') return false; // 銀化演出中は無効
+        if ((state === 'gameover' || state === 'clear') && this.game.retryWaitTimer > 0) return false; // 待ち時間中は無効
+        return true;
+    }
+
+    /**
+     * 状態に応じたラベルを返す（追補T-6.1）
+     */
+    _getLabel() {
+        const state = this.game.state;
+        switch (state) {
+            case 'ready':    return 'スタート';
+            case 'playing':  return '一時停止';
+            case 'paused':   return '再開';
+            case 'evolving': return '一時停止';
+            case 'gameover':
+            case 'clear':    return 'リトライ';
+            default:         return 'START';
+        }
+    }
+
+    /**
+     * 見た目を更新する（毎フレームまたはイベント時に呼ぶ）
+     */
+    _updateStyle() {
+        const enabled = this._isEnabled();
+        const pressed = this.isPressed && enabled;
+
+        const label = this._getLabel();
+        this.el.textContent = label;
+
+        if (!enabled) {
+            // 押せない状態: 暗い見た目（追補T-6.1）
+            this.el.style.background = 'rgba(60, 60, 80, 0.55)';
+            this.el.style.color = 'rgba(150, 150, 170, 0.7)';
+            this.el.style.border = '2px solid rgba(100, 100, 130, 0.5)';
+            this.el.style.boxShadow = 'none';
+        } else if (pressed) {
+            // 押している間の見た目（追補T-6.2）
+            this.el.style.background = 'rgba(30, 120, 220, 0.9)';
+            this.el.style.color = '#ffffff';
+            this.el.style.border = '2px solid rgba(180, 220, 255, 0.9)';
+            this.el.style.boxShadow = '0 0 12px rgba(100, 180, 255, 0.8)';
+        } else {
+            // 通常の見た目
+            this.el.style.background = 'rgba(50, 100, 200, 0.65)';
+            this.el.style.color = '#ffffff';
+            this.el.style.border = '2px solid rgba(120, 180, 255, 0.7)';
+            this.el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.4)';
+        }
+    }
+
+    /**
+     * 毎フレーム呼ぶ（ラベル・見た目の更新）
+     */
+    update() {
+        this._updateStyle();
+    }
+}
+
+// ==========================================
+// 段階2: 画面レイアウト（タッチ環境）（追補T-8.2）
+// ==========================================
+
+/**
+ * タッチ環境でのcanvas縮小表示サイズを計算してCSSに適用する
+ * 修正B・C: transformではなくCSS width/heightで縮小し、画面中央に収める
+ * 内部解像度897×897と座標計算は変更しない（追補T-8.2）
+ */
+function updateCanvasScale() {
+    if (!IS_TOUCH_ENV) return;
+
+    // 利用できる高さ・幅: 実際に見えている領域
+    const availW = window.innerWidth;
+    const availH = window.innerHeight;
+
+    // border (2px * 2 = 4px) を考慮
+    const borderSize = 4;
+    const maxW = availW - borderSize;
+    const maxH = availH - borderSize;
+
+    // 897pxを上限として、画面に収まる正方形サイズを計算
+    const displaySize = Math.min(897, Math.max(0, Math.min(maxW, maxH)));
+
+    document.documentElement.style.setProperty('--canvas-display-size', `${Math.floor(displaySize)}px`);
+
+    return displaySize / 897;
+}
+
+/**
+ * 仮想十字キーと仮想STARTの位置を計算・設定する
+ * safe-area-insetはJavaScriptから読み取れないため、CSSの定数DPAD_MARGIN_*を使用し
+ * body.getBoundingClientRect()で実際の表示領域の端を取得する（追補T-8.4）
+ */
+function updateControlsLayout(dpad, vstart) {
+    if (!IS_TOUCH_ENV) return;
+
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    // 仮想十字キー: 端末の表示領域の左下（追補T-8.1, T-8.4）
+    // safe-area-insetはenv()変数としてCSSからは参照できるが、JSから直接読む方法がない。
+    // ここでは定数マージンを使用する（実機で調整が必要）
+    const dpadLeft = DPAD_MARGIN_LEFT;
+    const dpadTop = vh - DPAD_SIZE - DPAD_MARGIN_BOTTOM;
+    dpad.setPosition(dpadLeft, dpadTop);
+
+    // 仮想START: 画面中央の下部（追補T-8.1）
+    // 位置はRetryボタンと同じ: 画面中央下部
+    const vstartLeft = Math.floor(vw / 2 - VSTART_SIZE / 2);
+    const vstartTop = vh - VSTART_SIZE - VSTART_MARGIN_BOTTOM;
+    vstart.setPosition(vstartLeft, vstartTop);
+}
+
+// ==========================================
+// 9. main.js (起動・メインループ)
+// ==========================================
+const canvas = document.getElementById('gameCanvas');
+const retryButton = document.getElementById('retryButton');
+const dpadCanvas = document.getElementById('virtualDpad');
+const vstartEl = document.getElementById('virtualStart');
+
+if (!canvas || !retryButton) {
+    throw new Error('Canvas or Retry button element not found');
+}
+
+// タッチ環境の場合にbody・要素を設定（追補T-8）
+if (IS_TOUCH_ENV) {
+    document.body.classList.add('touch-env');
+    dpadCanvas.style.display = 'block';
+    vstartEl.style.display = 'flex';
+    vstartEl.style.alignItems = 'center';
+    vstartEl.style.justifyContent = 'center';
+    // 初期スケール設定
+    updateCanvasScale();
+}
+
+const game = new Game(canvas, retryButton);
+
+// 仮想操作系（タッチ環境のみ生成）
+let dpad = null;
+let vstart = null;
+if (IS_TOUCH_ENV) {
+    dpad = new VirtualDpad(dpadCanvas, game.input);
+    vstart = new VirtualStartButton(vstartEl, game.input, game);
+    updateControlsLayout(dpad, vstart);
+
+    // 念のための対策: リサイズ・向き変更の集約ハンドラ
+    // 画面サイズが実際に変わったときだけ、1フレームに1回にまとめて実行
+    let lastInnerWidth = window.innerWidth;
+    let lastInnerHeight = window.innerHeight;
+    let resizeRafId = null;
+
+    function applyLayoutAndOrientationUpdate() {
+        resizeRafId = null;
+        const currentW = window.innerWidth;
+        const currentH = window.innerHeight;
+        // 画面のサイズが実際に変わったときだけ実行
+        if (currentW === lastInnerWidth && currentH === lastInnerHeight) {
+            return;
+        }
+        lastInnerWidth = currentW;
+        lastInnerHeight = currentH;
+
+        updateCanvasScale();
+        if (dpad && vstart) {
+            updateControlsLayout(dpad, vstart);
+        }
+        if (game) {
+            game._checkPortrait();
+        }
+    }
+
+    function scheduleLayoutUpdate() {
+        if (resizeRafId === null) {
+            resizeRafId = requestAnimationFrame(applyLayoutAndOrientationUpdate);
+        }
+    }
+
+    window.addEventListener('resize', scheduleLayoutUpdate);
+    window.addEventListener('orientationchange', () => {
+        scheduleLayoutUpdate();
+        // iOS Safari等の回転アニメーション完了遅延（100〜150ms）に備えて追従
+        setTimeout(scheduleLayoutUpdate, 150);
+    });
+}
+
+// ブラウザ標準動作の抑止（ゲーム画面・操作系の上でスクロール等を防止）（追補T-8.5）
+document.addEventListener('touchstart', (e) => {
+    if (IS_TOUCH_ENV) e.preventDefault();
+}, { passive: false });
+document.addEventListener('touchmove', (e) => {
+    if (IS_TOUCH_ENV) e.preventDefault();
+}, { passive: false });
+
+let lastTime = performance.now();
+const MAX_DT = 0.05; // 50ms（20FPS相当）上限でワープやすり抜けを防止
+
+function loop(currentTime) {
+    const dt = Math.min((currentTime - lastTime) / 1000, MAX_DT);
+    lastTime = currentTime;
+    game.update(dt);
+    game.draw();
+    // 仮想STARTの見た目を毎フレーム更新（状態に応じたラベル切り替え）
+    if (IS_TOUCH_ENV && vstart) {
+        vstart.update();
+    }
+    requestAnimationFrame(loop);
+}
+requestAnimationFrame((time) => {
+    lastTime = time;
+    requestAnimationFrame(loop);
+});
+  </script>
+</body>
+</html>
